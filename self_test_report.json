@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-04-12T23:26:12.844446",
+  "device_id": "sentinellite-tampere",
+  "tests": {
+    "config": {
+      "status": "PASS",
+      "detail": "Loaded, device=sentinellite-tampere",
+      "critical": true
+    },
+    "secrets": {
+      "status": "PASS",
+      "detail": "All secrets present",
+      "critical": true
+    },
+    "model": {
+      "status": "PASS",
+      "detail": "Found (4.4MB)",
+      "critical": true
+    },
+    "camera": {
+      "status": "PASS",
+      "detail": "Frame fresh (0.3s old)",
+      "critical": true
+    },
+    "ramdisk": {
+      "status": "PASS",
+      "detail": "/dev/shm writable",
+      "critical": true
+    },
+    "gpio": {
+      "status": "PASS",
+      "detail": "GPIO subsystem available",
+      "critical": false
+    },
+    "internet": {
+      "status": "PASS",
+      "detail": "Connected",
+      "critical": true
+    },
+    "pushover": {
+      "status": "PASS",
+      "detail": "Credentials present (not validated)",
+      "critical": true
+    },
+    "ftp_config": {
+      "status": "PASS",
+      "detail": "Configured: econow@81.214.129.27",
+      "critical": false
+    },
+    "disk": {
+      "status": "PASS",
+      "detail": "47500MB free (86.1% available)",
+      "critical": true
+    }
+  },
+  "passed": 10,
+  "failed": 0,
+  "overall": "PASS"
+}

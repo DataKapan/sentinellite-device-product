@@ -1,0 +1,8 @@
+{
+  "version": "3.12-prod",
+  "build_date": "2026-04-12T23:05:09+03:00",
+  "git_commit": "bd0aa4b",
+  "git_branch": "prod-single-device",
+  "model_version": "mobilenet_ssd_v2_coco",
+  "python_version": "3.13.5"
+}

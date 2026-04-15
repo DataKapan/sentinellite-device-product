@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+events/
+push_log/
+photos/
+.config_version
+config.json

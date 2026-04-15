@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-04-14T00:43:38.384539",
+  "device_id": "sentinellite-tampere",
+  "location": "Turku",
+  "version": "3.12-prod",
+  "uptime_seconds": 5710,
+  "mode": "NORMAL",
+  "cpu_percent": 0.0,
+  "memory_mb": 176,
+  "memory_percent": 42.3,
+  "disk_free_mb": 47490,
+  "disk_percent": 14.0,
+  "last_frame_age_sec": null,
+  "last_detection_at": null,
+  "last_upload_at": null,
+  "queue_size": 0,
+  "failed_count": 26,
+  "counters_24h": {
+    "event_count": 0,
+    "alert_count": 0,
+    "upload_success": 0,
+    "upload_fail": 0
+  }
+}

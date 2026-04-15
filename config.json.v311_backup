@@ -1,0 +1,50 @@
+{
+    "DEVICE_ID": "",
+    "FTP": {
+        "SERVER": "81.214.129.27",
+        "USERNAME": "econow",
+        "PASSWORD": "econow123"
+    },
+    "SENSOR": {
+        "PORT": "/dev/serial0",
+        "BAUDRATE": 115200,
+        "PRESENCE_GPIO_PIN": 26
+    },
+    "PUSHOVER": {
+        "APP_TOKEN": "",
+        "GROUP_KEY": ""
+    },
+    "EMAIL": {
+        "SMTP_SERVER": "smtp.gmail.com",
+        "SMTP_PORT": 587,
+        "SENDER_EMAIL": "",
+        "SENDER_PASSWORD": "",
+        "RECIPIENT_EMAILS": []
+    },
+    "MILESTONE": {
+        "ENABLED": false,
+        "IP": "",
+        "PORT": 11234,
+        "ZONE_NAME": ""
+    },
+    "DETECTION": {
+        "TARGETS": ["insan", "kamyon"],
+        "THRESHOLD": 0.45,
+        "TRUCK_SCAN_INTERVAL": 10,
+        "FAST_SCAN_INTERVAL": 0,
+        "CONFIRM_THRESHOLD": 3,
+        "EXIT_THRESHOLD": 4,
+        "MODE_TIMEOUT": 60,
+        "MAX_CAMERA_ERRORS": 5,
+        "CAMERA_ERROR_COOLDOWN": 30,
+        "DETECTION_TOLERANCE": 2
+    },
+    "SYSTEM": {
+        "MODEL_PATH_RELATIVE": "model/detect.tflite",
+        "PHOTO_DIR_RELATIVE": "photos",
+        "TEMP_DIR_RELATIVE": "temp",
+        "LOG_FILE_RELATIVE": "logs/sentinel.log",
+        "SENSOR_CALIBRATION_SECONDS": 10,
+        "INTERNET_CHECK_INTERVAL_SECONDS": 300
+    }
+}
