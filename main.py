@@ -1100,7 +1100,7 @@ class SentinelSystem:
         cam_height = camera_config.get('HEIGHT', 720)
         
         # Initialize components
-        model_path = os.path.join(BASE_DIR, self.system_config.get('MODEL_PATH_RELATIVE', 'model/detect.tflite'))
+        model_path = self.system_config.get('MODEL_PATH') or os.path.join(BASE_DIR, self.system_config.get('MODEL_PATH_RELATIVE', 'model/detect.tflite'))
         self.sensor = SensorReader(config.get('SENSOR', {}))
         self.camera = CameraManager(self.photo_dir, width=cam_width, height=cam_height)
         self.detector = TFLiteDetector(

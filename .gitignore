@@ -6,3 +6,4 @@ push_log/
 photos/
 .config_version
 config.json
+models/*.tflite

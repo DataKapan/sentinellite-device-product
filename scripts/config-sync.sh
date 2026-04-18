@@ -25,3 +25,6 @@ fi
 
 # Check and execute pending commands
 python3 /opt/sentinel/scripts/check_commands.py
+
+# Model sync - check if model changed
+python3 /opt/sentinel/model_sync.py 2>/dev/null
