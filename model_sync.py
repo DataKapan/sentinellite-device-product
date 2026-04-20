@@ -3,6 +3,7 @@
 import os
 import json
 import requests
+import subprocess
 
 BACKEND_URL = "http://141.144.242.141:8000"
 MODELS_DIR = "/opt/sentinel/models"
@@ -34,13 +35,15 @@ def download_model(model_id):
         print(f"Model already exists: {filepath}")
         return filepath
     try:
-        resp = requests.get(f"{BACKEND_URL}/api/v1/models/{model_id}/download", timeout=60, stream=True)
+        resp = requests.get(f"{BACKEND_URL}/api/v1/models/{model_id}/download", timeout=120, stream=True)
         if resp.ok:
             with open(filepath, 'wb') as f:
                 for chunk in resp.iter_content(chunk_size=8192):
                     f.write(chunk)
             print(f"Downloaded model: {filepath} ({os.path.getsize(filepath)} bytes)")
             return filepath
+        else:
+            print(f"Download failed: {resp.status_code}")
     except Exception as e:
         print(f"Download error: {e}")
     return None
@@ -64,10 +67,14 @@ if __name__ == "__main__":
     assigned = get_device_model()
     print(f"Current: {current}")
     print(f"Assigned: {assigned}")
+    
     if assigned and assigned != current:
-        print("Downloading...")
+        print("Model changed! Downloading...")
         path = download_model(assigned)
         if path:
             update_config_model(assigned, path)
+            print("Restarting sentinel service...")
+            subprocess.run(['sudo', 'systemctl', 'restart', 'sentinel'], check=False)
+            print("✅ Model updated and service restarted")
     else:
         print("Up to date")

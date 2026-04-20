@@ -24,7 +24,7 @@ import shutil
 import traceback
 import socket
 import gzip
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ftplib import FTP
 from enum import Enum, auto
 from pathlib import Path
@@ -45,6 +45,41 @@ CLASS_PERSON = 0
 CLASS_CAR = 2
 CLASS_BUS = 5
 CLASS_TRUCK = 7
+
+# ============ TRANSLATIONS ============
+TRANSLATIONS = {
+    "tr": {
+        "system_active": "🟢 Sentinel Aktif",
+        "system_active_msg": "Cihaz: {device_id}\nSürüm: {version}\nMod: Production Ready",
+        "human_detected": "🚨 İNSAN TESPİT EDİLDİ - {device_id}",
+        "human_detected_msg": "Konum: {location}\nSaat: {time}",
+        "vehicle_detected": "🚛 ARAÇ TESPİT EDİLDİ - {device_id}",
+        "vehicle_detected_msg": "{vehicle_type} tespit edildi\nKonum: {location}\nSaat: {time}",
+    },
+    "en": {
+        "system_active": "🟢 Sentinel Active",
+        "system_active_msg": "Device: {device_id}\nVersion: {version}\nMode: Production Ready",
+        "human_detected": "🚨 HUMAN DETECTED - {device_id}",
+        "human_detected_msg": "Location: {location}\nTime: {time}",
+        "vehicle_detected": "🚛 VEHICLE DETECTED - {device_id}",
+        "vehicle_detected_msg": "{vehicle_type} detected\nLocation: {location}\nTime: {time}",
+    },
+    "fi": {
+        "system_active": "🟢 Sentinel Aktiivinen",
+        "system_active_msg": "Laite: {device_id}\nVersio: {version}\nMode: Production Ready",
+        "human_detected": "🚨 HENKILÖ HAVAITTU - {device_id}",
+        "human_detected_msg": "Sijainti: {location}\nAika: {time}",
+        "vehicle_detected": "🚛 AJONEUVO HAVAITTU - {device_id}",
+        "vehicle_detected_msg": "{vehicle_type} havaittu\nSijainti: {location}\nAika: {time}",
+    }
+}
+
+def get_text(key, lang="fi", **kwargs):
+    text = TRANSLATIONS.get(lang, TRANSLATIONS["fi"]).get(key, key)
+    try:
+        return text.format(**kwargs)
+    except:
+        return text
 
 class SystemMode(Enum):
     NORMAL = auto()
@@ -194,7 +229,6 @@ class EventLogger:
             def send_to_backend(dev_id, etype, details, eid):
                 try:
                     import requests
-                    from datetime import datetime, timezone
                     resp = requests.post(
                         f"http://141.144.242.141:8000/api/v1/devices/{dev_id}/events",
                         json={
@@ -221,7 +255,7 @@ class EventLogger:
                             "event_type": etype,
                             "device_id": device_id,
                             "details": details,
-                            "timestamp": datetime.utcnow().isoformat() + "Z"
+                            "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
                         }, timeout=5)
                     except: pass
                 threading.Thread(target=send_webhook, args=(webhook_url, event_type, safe_details, event_id), daemon=True).start()
@@ -236,7 +270,7 @@ class EventLogger:
         
         event = {
             "event_id": f"{event_type}_{datetime.now().strftime('%H%M%S_%f')}",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
             "device_id": self.device_id,
             "location": self.location,
             "event_type": event_type,
@@ -256,7 +290,7 @@ class EventLogger:
     def log_push_result(self, event_id, success, error=None):
         """Log push result to separate file - append only"""
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
             "event_id": event_id,
             "success": success,
             "error": str(error) if error else None
@@ -326,7 +360,7 @@ class ZoneTracker:
                 event = {
                     'type': 'entry',
                     'entity': entity_type,
-                    'timestamp': datetime.utcnow().isoformat() + "Z"
+                    'timestamp': datetime.now(timezone.utc).isoformat() + "Z"
                 }
                 log(f"🚪 ENTRY: {entity_type}")
             else:
@@ -340,7 +374,7 @@ class ZoneTracker:
                 event = {
                     'type': 'exit',
                     'entity': self.current_entity_type,
-                    'timestamp': datetime.utcnow().isoformat() + "Z",
+                    'timestamp': datetime.now(timezone.utc).isoformat() + "Z",
                     'duration_seconds': round(duration, 1)
                 }
                 log(f"🚪 EXIT: {self.current_entity_type} (süre: {duration:.1f}s)")
@@ -904,7 +938,7 @@ class HealthMonitor:
     
     def record_detection(self):
         """Record last detection time"""
-        self.last_detection_at = datetime.utcnow().isoformat() + "Z"
+        self.last_detection_at = datetime.now(timezone.utc).isoformat() + "Z"
         self.increment("event_count")
     
     def record_alert(self):
@@ -915,7 +949,7 @@ class HealthMonitor:
         """Record upload result"""
         if success:
             self.increment("upload_success")
-            self.last_upload_at = datetime.utcnow().isoformat() + "Z"
+            self.last_upload_at = datetime.now(timezone.utc).isoformat() + "Z"
         else:
             self.increment("upload_fail")
     
@@ -937,7 +971,7 @@ class HealthMonitor:
             disk = psutil.disk_usage('/')
             
             snapshot = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
                 "device_id": self.device_id,
                 "location": self.location,
                 "version": self.version,
@@ -957,7 +991,7 @@ class HealthMonitor:
             }
             return snapshot
         except Exception as e:
-            return {"error": str(e), "timestamp": datetime.utcnow().isoformat() + "Z"}
+            return {"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat() + "Z"}
     
     def write_snapshot(self, mode="NORMAL", queue_size=0, failed_count=0):
         """Write health snapshot to file"""
@@ -1027,7 +1061,7 @@ class InternalWatchdog:
                 # Write heartbeat
                 try:
                     Path(self.heartbeat_file).write_text(
-                        f"{now}\n{datetime.utcnow().isoformat() + "Z"}\n{self.sentinel.mode.name}"
+                        f"{now}\n{datetime.now(timezone.utc).isoformat() + "Z"}\n{self.sentinel.mode.name}"
                     )
                 except:
                     pass
@@ -1189,8 +1223,8 @@ class SentinelSystem:
         asyncio.create_task(self._supervised_task("health_snapshot", self.health_snapshot_task))
         
         await self.pushover.send_alert(
-            "🟢 Sentinel Aktiivinen",
-            f"Laite: {self.device_id}\nVersio: {self.VERSION}\nMode: Production Ready",
+            get_text("system_active", self.config.get("LANGUAGE", "fi")),
+            get_text("system_active_msg", self.config.get("LANGUAGE", "fi"), device_id=self.device_id, version=self.VERSION),
             priority=0
         )
         log(f"Sentinel v{self.VERSION} başlatıldı - {self.device_id}")
@@ -1453,8 +1487,8 @@ class SentinelSystem:
                             }
                             asyncio.create_task(self._send_alert_with_logging(
                                 "human_detected",
-                                f"🚨 HENKILÖ HAVAITTU - {self.device_id}",
-                                f"Sijainti: {self.config.get('LOCATION', self.device_id)}\nAika: {datetime.now().strftime('%H:%M:%S')}",
+                                get_text("human_detected", self.config.get("LANGUAGE", "fi"), device_id=self.device_id),
+                                get_text("human_detected_msg", self.config.get("LANGUAGE", "fi"), location=self.config.get('LOCATION', self.device_id), time=datetime.now().strftime('%H:%M:%S')),
                                 saved_photo,
                                 details
                             ))
@@ -1572,7 +1606,7 @@ class SentinelSystem:
                             else:
                                 title = f"🚛 REKKA HAVAITTU - {self.device_id}"
                             
-                            msg = f"Sijainti: {self.config.get('LOCATION', self.device_id)}\nAika: {datetime.now().strftime('%H:%M:%S')}"
+                            msg = get_text("human_detected_msg", self.config.get("LANGUAGE", "fi"), location=self.config.get('LOCATION', self.device_id), time=datetime.now().strftime('%H:%M:%S'))
                             if has_human:
                                 msg += "\n⚠️ Henkilö/kuljettaja myös havaittu!"
                             
@@ -1665,7 +1699,7 @@ async def run_self_test():
             pass
     
     results = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         "device_id": "unknown",
         "tests": {},
         "passed": 0,

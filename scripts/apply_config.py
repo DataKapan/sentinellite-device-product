@@ -71,6 +71,10 @@ if 'integrations' in config:
     wh = config['integrations'].get('webhook', {})
     if wh.get('url'):
         current['WEBHOOK'] = {'URL': wh['url']}
+    # Pushover language
+    po = config['integrations'].get('pushover', {})
+    if po.get('language'):
+        current['LANGUAGE'] = po['language']
 
 if 'integrations' in config:
     intg = config['integrations']
