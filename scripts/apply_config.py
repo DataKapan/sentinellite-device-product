@@ -38,6 +38,8 @@ if 'FTP' not in current:
     current['FTP'] = {}
 if 'PUSHOVER' not in current:
     current['PUSHOVER'] = {}
+if 'RADAR' not in current:
+    current['RADAR'] = {}
 
 if 'camera' in config:
     cam = config['camera']
@@ -51,9 +53,11 @@ if 'camera' in config:
 if 'detection' in config:
     det = config['detection']
     thresh = det.get('thresholds', {})
-    current['DETECTION']['HUMAN_THRESHOLD_DAY'] = thresh.get('person', 0.45)
-    current['DETECTION']['HUMAN_THRESHOLD_NIGHT'] = thresh.get('person', 0.45) - 0.15
-    current['DETECTION']['CAR_THRESHOLD'] = thresh.get('vehicle', 0.40)
+    # Yeni format: person_day, person_night
+    current['DETECTION']['HUMAN_THRESHOLD_DAY'] = thresh.get('person_day', thresh.get('person', 0.45))
+    current['DETECTION']['HUMAN_THRESHOLD_NIGHT'] = thresh.get('person_night', thresh.get('person', 0.45) - 0.15)
+    current['DETECTION']['CAR_THRESHOLD'] = thresh.get('vehicle_day', thresh.get('vehicle', 0.40))
+    current['DETECTION']['CAR_THRESHOLD_NIGHT'] = thresh.get('vehicle_night', 0.35)
     current['DETECTION']['TRUCK_THRESHOLD'] = 0.35
     current['ENABLED_CLASSES'] = det.get('enabled_classes', [0, 2, 7])
     current['NOTIFICATIONS'] = det.get('notifications', {})
@@ -65,6 +69,23 @@ if 'schedule' in config:
     current['SCHEDULE_END'] = sch.get('end', '23:59')
     current['NIGHT_START'] = sch.get('night_start', '21:00')
     current['NIGHT_END'] = sch.get('night_end', '06:00')
+
+# Radar
+if 'radar' in config:
+    rad = config['radar']
+    current['RADAR']['ENABLED'] = rad.get('enabled', False)
+    current['RADAR']['PORT'] = '/dev/ttyAMA0'
+    current['RADAR']['BAUD'] = 115200
+    current['RADAR']['PUSHOVER_ENABLED'] = rad.get('pushover', True)
+    current['RADAR']['WEBHOOK_URL'] = rad.get('webhook_url', '')
+    if 'zones' in rad:
+        current['RADAR']['ZONES'] = {}
+        for zone_name, zone_cfg in rad['zones'].items():
+            current['RADAR']['ZONES'][zone_name.upper()] = {
+                'min': zone_cfg.get('min', 0),
+                'max': zone_cfg.get('max', 1000),
+                'actions': zone_cfg.get('actions', ['log'])
+            }
 
 # Webhook
 if 'integrations' in config:

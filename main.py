@@ -29,6 +29,13 @@ from ftplib import FTP
 from enum import Enum, auto
 from pathlib import Path
 
+# Radar modülü (opsiyonel)
+try:
+    from radar_reader import RadarReader
+    RADAR_AVAILABLE = True
+except ImportError:
+    RADAR_AVAILABLE = False
+
 import numpy as np
 from PIL import Image
 import cv2
@@ -38,7 +45,7 @@ import RPi.GPIO as GPIO
 import httpx
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = os.path.expanduser('~/sentinel')
+BASE_DIR = '/opt/sentinel'
 
 # COCO class IDs
 CLASS_PERSON = 0
@@ -55,6 +62,8 @@ TRANSLATIONS = {
         "human_detected_msg": "Konum: {location}\nSaat: {time}",
         "vehicle_detected": "🚛 ARAÇ TESPİT EDİLDİ - {device_id}",
         "vehicle_detected_msg": "{vehicle_type} tespit edildi\nKonum: {location}\nSaat: {time}",
+        "radar_alert": "📡 RADAR UYARI - {device_id}",
+        "radar_alert_msg": "Bölge: {zone}\nMesafe: {distance}cm",
     },
     "en": {
         "system_active": "🟢 Sentinel Active",
@@ -63,6 +72,8 @@ TRANSLATIONS = {
         "human_detected_msg": "Location: {location}\nTime: {time}",
         "vehicle_detected": "🚛 VEHICLE DETECTED - {device_id}",
         "vehicle_detected_msg": "{vehicle_type} detected\nLocation: {location}\nTime: {time}",
+        "radar_alert": "📡 RADAR ALERT - {device_id}",
+        "radar_alert_msg": "Zone: {zone}\nDistance: {distance}cm",
     },
     "fi": {
         "system_active": "🟢 Sentinel Aktiivinen",
@@ -71,6 +82,8 @@ TRANSLATIONS = {
         "human_detected_msg": "Sijainti: {location}\nAika: {time}",
         "vehicle_detected": "🚛 AJONEUVO HAVAITTU - {device_id}",
         "vehicle_detected_msg": "{vehicle_type} havaittu\nSijainti: {location}\nAika: {time}",
+        "radar_alert": "📡 TUTKA HÄLYTYS - {device_id}",
+        "radar_alert_msg": "Alue: {zone}\nEtäisyys: {distance}cm",
     }
 }
 
@@ -1151,6 +1164,20 @@ class SentinelSystem:
         self.case_manager = CaseManager(BASE_DIR, self.device_id)
         self.health_monitor = HealthMonitor(BASE_DIR, self.device_id, self.config.get("LOCATION", "unknown"), version="3.12-prod")
         self.zone_tracker = ZoneTracker()
+        
+        # Radar mesafe sistemi (opsiyonel)
+        self.radar = None
+        self.radar_config = config.get("RADAR", {})
+        if RADAR_AVAILABLE and self.radar_config.get("ENABLED", False):
+            try:
+                self.radar = RadarReader(self.radar_config)
+                if self.radar.initialize():
+                    self.radar.on_zone_change = self._on_radar_zone_change
+                    log("📡 Radar mesafe sistemi aktif")
+                else:
+                    self.radar = None
+            except Exception as e:
+                log(f"Radar başlatılamadı: {e}", logging.WARNING)
         self.watchdog = InternalWatchdog(self, BASE_DIR)
         
         log(f"📷 Kamera: {self.camera_type} ({cam_width}x{cam_height}), NoIR düzeltme: {self.noir_correction_enabled}")
@@ -1303,6 +1330,55 @@ class SentinelSystem:
         
         result = await self.detector.detect(photo)
         return photo, result
+
+
+    def _on_radar_zone_change(self, old_zone, new_zone, distance):
+        """Radar zone değiştiğinde çağrılır - webhook ve ek aksiyonlar"""
+        log(f"📡 Radar zone: {old_zone} → {new_zone} ({distance}cm)")
+        
+        zone_config = self.radar_config.get("ZONES", {}).get(new_zone, {})
+        actions = zone_config.get("actions", [])
+        
+        # Event log
+        self.event_logger.log_event("radar_zone_change", {
+            "old_zone": old_zone,
+            "new_zone": new_zone,
+            "distance_cm": distance,
+            "actions": actions
+        })
+        
+        # Webhook
+        if "webhook" in actions:
+            webhook_url = zone_config.get("webhook_url") or self.radar_config.get("WEBHOOK_URL")
+            if webhook_url:
+                self._send_radar_webhook(webhook_url, new_zone, distance)
+        
+        # Pushover (fotoğrafsız, dil destekli)
+        if "pushover" in actions and self.radar_config.get("PUSHOVER_ENABLED", True):
+            import asyncio
+            lang = self.config.get("LANGUAGE", "fi")
+            title = get_text("radar_alert", lang, device_id=self.device_id)
+            msg = get_text("radar_alert_msg", lang, zone=new_zone, distance=distance)
+            asyncio.create_task(self.pushover.send_alert(title, msg, priority=0))
+    
+    def _send_radar_webhook(self, url, zone, distance):
+        """Radar webhook gönder"""
+        import threading
+        import requests
+        def send():
+            try:
+                payload = {
+                    "device_id": self.device_id,
+                    "event": "radar_zone_change",
+                    "zone": zone,
+                    "distance_cm": distance,
+                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
+                }
+                requests.post(url, json=payload, timeout=5)
+                log(f"📡 Radar webhook sent: {zone}")
+            except Exception as e:
+                log(f"Radar webhook error: {e}", logging.WARNING)
+        threading.Thread(target=send, daemon=True).start()
 
     async def _send_alert_with_logging(self, event_type, title, message, photo_path, details):
         """Log event locally first, then send Pushover (with notification filter)"""
@@ -1658,6 +1734,10 @@ class SentinelSystem:
         await asyncio.sleep(cal)
         log("✅ Sistem aktif")
         
+        # Radar task (opsiyonel)
+        if self.radar:
+            asyncio.create_task(self._radar_loop())
+        
         while True:
             try:
                 if self.mode == SystemMode.NORMAL:
@@ -1671,6 +1751,20 @@ class SentinelSystem:
                 self.mode = SystemMode.NORMAL
                 self.sensor.resume()
                 await asyncio.sleep(3)
+
+
+    async def _radar_loop(self):
+        """Radar mesafe okuma döngüsü - bağımsız çalışır"""
+        log("📡 Radar loop başladı")
+        while True:
+            try:
+                if self.radar:
+                    presence, distance, zone, event = self.radar.read()
+                    # Zone değişimi callback ile otomatik handle edilir
+                await asyncio.sleep(0.15)
+            except Exception as e:
+                log(f"Radar loop error: {e}", logging.WARNING)
+                await asyncio.sleep(1)
 
     async def cleanup(self):
         await self.camera.cleanup()
