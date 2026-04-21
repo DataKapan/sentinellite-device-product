@@ -7,3 +7,12 @@ photos/
 .config_version
 config.json
 models/*.tflite
+cases/
+temp/
+*.jpg
+*.jpeg
+*.png
+health.json
+heartbeat
+self_test_report.json
+*.backup
