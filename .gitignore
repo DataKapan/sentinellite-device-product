@@ -16,3 +16,6 @@ health.json
 heartbeat
 self_test_report.json
 *.backup
+logs/
+temp/
+cases/

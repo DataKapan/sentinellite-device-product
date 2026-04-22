@@ -115,8 +115,11 @@ if 'integrations' in config:
             'ANALYTICS_ID': ms.get('analytics_id', '')
         }
 
+# FTP password (iki format desteği)
 if creds.get('ftp', {}).get('password'):
     current['FTP']['PASS'] = creds['ftp']['password']
+elif creds.get('ftp_password'):
+    current['FTP']['PASS'] = creds['ftp_password']
 if creds.get('pushover', {}).get('app_token'):
     current['PUSHOVER']['TOKEN'] = creds['pushover']['app_token']
 if creds.get('pushover', {}).get('group_key'):

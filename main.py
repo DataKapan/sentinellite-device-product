@@ -716,8 +716,8 @@ class FTPQueueManager:
         self.event_logger = event_logger
         # Environment variables take priority
         self.server = os.environ.get('FTP_SERVER', config.get('SERVER', ''))
-        self.username = os.environ.get('FTP_USERNAME', config.get('USERNAME', ''))
-        self.password = os.environ.get('FTP_PASSWORD', config.get('PASSWORD', ''))
+        self.username = os.environ.get('FTP_USERNAME', config.get('USER', config.get('USERNAME', '')))
+        self.password = os.environ.get('FTP_PASSWORD', config.get('PASS', config.get('PASSWORD', '')))
         
         self.device_id = device_id
         self.temp_dir = temp_dir
@@ -725,6 +725,17 @@ class FTPQueueManager:
         self.failed_dir = os.path.join(temp_dir, "failed")
         os.makedirs(temp_dir, exist_ok=True)
         os.makedirs(self.failed_dir, exist_ok=True)
+        
+        # Startup'ta mevcut case'leri tara
+        self._pending_cases = []
+        cases_dir = os.path.join(os.path.dirname(temp_dir), "cases")
+        for scan_dir in [cases_dir, self.failed_dir]:
+            if os.path.exists(scan_dir):
+                for d in os.listdir(scan_dir):
+                    if d.startswith('case_'):
+                        self._pending_cases.append(os.path.join(scan_dir, d))
+        if self._pending_cases:
+            log(f"📤 Başlangıçta {len(self._pending_cases)} bekleyen case bulundu")
 
     def queue_case(self, case_dir):
         if os.path.isdir(case_dir):
@@ -790,10 +801,13 @@ class FTPQueueManager:
 
     def _connect_ftp(self):
         try:
+            log(f"FTP bağlanıyor: {self.server} / {self.username}")
             ftp = FTP(self.server, timeout=15)
             ftp.login(self.username, self.password)
+            log("FTP bağlantı başarılı")
             return ftp
-        except:
+        except Exception as e:
+            log(f"FTP bağlantı hatası: {e}", logging.ERROR)
             return None
 
     def _ensure_path(self, ftp, path):
@@ -824,6 +838,15 @@ class FTPQueueManager:
             log(f"Failed cleanup hatası: {e}", logging.ERROR)
 
     async def process_queue(self):
+        # İlk önce pending case'leri işle
+        if hasattr(self, '_pending_cases') and self._pending_cases:
+            log(f"📤 {len(self._pending_cases)} bekleyen case yükleniyor...")
+            for case_dir in self._pending_cases:
+                if os.path.isdir(case_dir):
+                    await self._upload_case(case_dir)
+            self._pending_cases = []
+            log("✅ Bekleyen case'ler işlendi")
+        
         while True:
             try:
                 case_dir = await asyncio.wait_for(self.upload_queue.get(), timeout=60)
