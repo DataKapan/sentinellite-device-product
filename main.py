@@ -257,6 +257,33 @@ class EventLogger:
                     log(f"❌ Backend sync error: {ex}")
             threading.Thread(target=send_to_backend, args=(device_id, event_type, safe_details, event_id), daemon=True).start()
             
+            # Send to Milestone if configured - only on entry, with 2 min cooldown
+            milestone_cfg = self.config.get('MILESTONE', {})
+            if milestone_cfg.get('ENABLED') and milestone_cfg.get('SERVER') and 'entry' in event_type.lower():
+                now = time.time()
+                last_ms = getattr(self, '_last_milestone_send', 0)
+                if now - last_ms >= 120:  # 2 dakika cooldown
+                    self._last_milestone_send = now
+                    def send_to_milestone(cfg, etype, details):
+                        try:
+                            import requests
+                            url = f"http://{cfg['SERVER']}:{cfg.get('PORT', 1235)}/"
+                            timestamp = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+                            event_id = int(time.time() * 1000)
+                            source = cfg.get('EVENT_SOURCE', 'Sentinel')
+                            message = str(details.get('entity', etype))
+                            xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+<AnalyticsEvent xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="urn:milestone-systems">
+<EventHeader><ID>{event_id}</ID><Timestamp>{timestamp}</Timestamp><Type>{etype}</Type><Message>{message}</Message><Source>{source}</Source></EventHeader>
+</AnalyticsEvent>"""
+                            resp = requests.post(url, data=xml_body, headers={"Content-Type": "text/xml"}, timeout=5)
+                            log(f"📹 Milestone: {etype} -> {resp.status_code}")
+                        except Exception as ex:
+                            log(f"❌ Milestone error: {ex}")
+                    threading.Thread(target=send_to_milestone, args=(milestone_cfg, event_type, safe_details), daemon=True).start()
+                else:
+                    log(f"📹 Milestone cooldown: {int(120 - (now - last_ms))}s kaldı")
+            
             # Send to webhook if configured
             webhook_url = self.config.get('WEBHOOK', {}).get('URL', '')
             if webhook_url:
@@ -857,6 +884,52 @@ class FTPQueueManager:
                 log(f"FTP kuyruk hatası: {e}", logging.ERROR)
             await asyncio.sleep(1)
 
+
+# ============ MILESTONE CLIENT ============
+
+class MilestoneClient:
+    """Send events to Milestone XProtect VMS"""
+    
+    def __init__(self, config):
+        self.enabled = config.get('ENABLED', False)
+        self.server = config.get('SERVER', '')
+        self.port = config.get('PORT', 1235)
+        self.event_source = config.get('EVENT_SOURCE', 'Sentinel')
+        self.analytics_id = config.get('ANALYTICS_ID', '')
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) if self.enabled else None
+        
+    async def send_event(self, event_type, message="", metadata=None):
+        if not self.enabled or not self.server:
+            return False
+        
+        try:
+            url = f"http://{self.server}:{self.port}/"
+            timestamp = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            event_id = int(time.time() * 1000)
+            
+            xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+<AnalyticsEvent xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="urn:milestone-systems">
+  <EventHeader>
+    <ID>{event_id}</ID>
+    <Timestamp>{timestamp}</Timestamp>
+    <Type>{event_type}</Type>
+    <Message>{message}</Message>
+    <Source>{self.event_source}</Source>
+  </EventHeader>
+</AnalyticsEvent>"""
+            
+            resp = await self.client.post(url, content=xml_body, headers={"Content-Type": "text/xml"})
+            log(f"📹 Milestone event: {event_type} -> {resp.status_code}")
+            return resp.status_code in [200, 201, 202, 204]
+        except Exception as e:
+            log(f"Milestone hatası: {e}", logging.ERROR)
+            return False
+    
+    async def close(self):
+        if self.client:
+            await self.client.aclose()
+
+
 # ============ PUSHOVER CLIENT ============
 
 class PushoverClient:
@@ -1182,6 +1255,7 @@ class SentinelSystem:
             car_threshold=self.detection_config.get('CAR_THRESHOLD', 0.40)
         )
         self.pushover = PushoverClient(config.get('PUSHOVER', {}))
+        self.milestone = MilestoneClient(config.get('MILESTONE', {}))
         self.event_logger = EventLogger(BASE_DIR, device_id=self.device_id, location=self.config.get("LOCATION", "unknown"), config=self.config)
         self.ftp_manager = FTPQueueManager(config.get('FTP', {}), self.device_id, self.temp_dir, event_logger=self.event_logger)
         self.case_manager = CaseManager(BASE_DIR, self.device_id)
