@@ -1,190 +1,248 @@
 #!/usr/bin/env python3
-"""RD-03 Radar Reader - Motion-based presence detection v4"""
-import serial
+"""
+RD-03 Radar Reader - Query Mode (JavaScript portuna benzer)
+"""
+
+import re
 import time
+import serial
 import logging
 import threading
-from collections import deque
+from typing import Callable, Optional
+from dataclasses import dataclass, field
 
-
+@dataclass
 class RadarConfig:
-    PORT = '/dev/ttyAMA0'
-    BAUD = 115200
-    QUERY_HEX = 'FDFCFBFA0800120000006400000004030201'
-    
-    WINDOW = 20
-    CALIBRATION_TIME = 5.0
-    STABILIZATION_TIME = 10.0  # Kalibrasyon sonrası bekleme
-    
-    ENTRY_DEVIATION = 50
-    MOTION_THRESHOLD = 15
-    ENTRY_COUNT = 4
-    
-    EXIT_BASELINE_TOLERANCE = 30
-    EXIT_BASELINE_COUNT = 5
-
+    port: str = '/dev/ttyAMA0'
+    baud_rate: int = 115200
+    min_range: float = 20.0
+    max_range: float = 800.0
+    motion_threshold: float = 30.0  # cm - hareket algılama eşiği
+    motion_count: int = 3           # ardışık hareket sayısı
+    no_motion_timeout: float = 5.0  # saniye - hareket yoksa exit
+    max_speed_cm_s: float = 400.0   # cm/s - üzeri araba sayılır, tetiklenmez
+    zones: dict = field(default_factory=dict)
+    zone_confirm_count: int = 2
 
 class RadarReader:
-    def __init__(self, config=None):
-        self.config = config or {}
-        self.port = self.config.get('PORT', RadarConfig.PORT)
-        self.baud = self.config.get('BAUD', RadarConfig.BAUD)
-        self.zones = self.config.get('ZONES', {})
-        
+    CONFIG_CMD = bytes.fromhex('FDFCFBFA0800120000006400000004030201')
+    
+    def __init__(self, config: Optional[RadarConfig] = None):
+        self.config = config or RadarConfig()
         self.ser = None
-        self.readings = deque(maxlen=RadarConfig.WINDOW)
-        self.baseline = None
-        self.calibration_start = None
-        self.stabilization_end = None  # Stabilizasyon bitiş zamanı
-        self.presence_active = False
-        self.entry_counter = 0
-        self.exit_counter = 0
-        self.last_dist = None
-        self.last_distance = None
-        self.current_zone = None
-        self.initialized = False
         self._lock = threading.Lock()
         
-        self.on_zone_change = None
-        self.on_presence_change = None
+        # State
+        self.initialized = False
+        self.presence_active = False
+        self.last_distance = 0.0
+        self.last_valid_distance = 0.0
+        self.last_activity_time = 0.0
+        
+        # Motion detection
+        self.distance_history = []
+        self.motion_count = 0
+        
+        # Zone
+        self.current_zone = None
+        self.pending_zone = None
+        self.zone_confirm_counter = 0
+        
+        # Callbacks
+        self.on_presence_change: Optional[Callable] = None
+        self.on_zone_change: Optional[Callable] = None
 
-    def initialize(self):
+    def initialize(self) -> bool:
         try:
-            self.ser = serial.Serial(port=self.port, baudrate=self.baud, timeout=1)
-            self.calibration_start = time.time()
+            self.ser = serial.Serial(
+                port=self.config.port,
+                baudrate=self.config.baud_rate,
+                timeout=0.1
+            )
+            logging.info(f"📡 Serial opened: {self.config.port} @ {self.config.baud_rate}")
+            
+            # Config komutu gönder
+            time.sleep(0.5)
+            self.ser.write(self.CONFIG_CMD)
+            logging.info("📡 Config komutu gönderildi")
+            time.sleep(0.5)
+            
             self.initialized = True
-            logging.info(f"📡 Radar: {self.port} @ {self.baud}")
-            logging.info("📡 Kalibrasyon (5s uzak dur)...")
+            self.last_activity_time = time.time()
             return True
         except Exception as e:
             logging.error(f"Radar init error: {e}")
             return False
 
-    def _read_raw(self):
+    def _read_line(self) -> Optional[str]:
+        """Sensörden satır oku"""
+        if not self.ser or not self.ser.in_waiting:
+            return None
         try:
-            self.ser.write(bytes.fromhex(RadarConfig.QUERY_HEX))
-            time.sleep(0.12)
-            raw = b""
-            deadline = time.time() + 0.2
-            while time.time() < deadline:
-                if self.ser.in_waiting:
-                    raw += self.ser.read(self.ser.in_waiting)
-                else:
-                    time.sleep(0.01)
-            
-            text = raw.decode('utf-8', errors='ignore')
-            if "Range" in text:
-                return float(text.split("Range")[-1].strip().split()[0])
-        except serial.SerialException:
+            line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+            return line if line else None
+        except:
+            return None
+
+    def _parse_distance(self, line: str) -> Optional[float]:
+        """'ON Range XXX' veya 'Range XXX' formatını parse et"""
+        if 'Range' not in line:
+            return None
+        m = re.search(r'Range\s*:?\s*(\d+(?:\.\d+)?)', line)
+        if m:
             try:
-                self.ser.close()
-                time.sleep(0.5)
-                self.ser = serial.Serial(port=self.port, baudrate=self.baud, timeout=1)
+                return float(m.group(1))
             except:
                 pass
-        except:
-            pass
         return None
 
-    def _get_zone(self, distance):
-        if not distance or not self.zones:
+    def _detect_motion(self, distance: float) -> bool:
+        """Son mesafelere bakarak hareket var mı? Araba hızında ise False."""
+        now = time.time()
+        self.distance_history.append((now, distance))
+        if len(self.distance_history) > 10:
+            self.distance_history.pop(0)
+        
+        if len(self.distance_history) < 3:
+            return False
+        
+        # Son 5 okumadaki min-max farkı
+        recent = self.distance_history[-5:] if len(self.distance_history) >= 5 else self.distance_history
+        distances = [d[1] for d in recent]
+        spread = max(distances) - min(distances)
+        
+        # Hız kontrolü - ilk ve son okuma arası
+        if len(recent) >= 2:
+            t_start, d_start = recent[0]
+            t_end, d_end = recent[-1]
+            dt = t_end - t_start
+            if dt > 0.05:
+                speed = abs(d_end - d_start) / dt  # cm/s
+                if speed > self.config.max_speed_cm_s:
+                    # Araba hızı - tetikleme
+                    return False
+        
+        return spread >= self.config.motion_threshold
+
+    def _get_zone(self, distance: float) -> Optional[str]:
+        if distance <= 0 or not self.config.zones:
             return None
-        for name, cfg in self.zones.items():
-            if cfg.get('min', 0) <= distance <= cfg.get('max', 9999):
+        for name, cfg in self.config.zones.items():
+            if cfg.get('min', 0) <= distance <= cfg.get('max', 999999):
                 return name
         return None
 
-    def _is_stabilizing(self):
-        """Stabilizasyon süresinde mi?"""
-        if self.stabilization_end is None:
-            return True
-        return time.time() < self.stabilization_end
+    def _update_zone(self, distance: float):
+        if not self.presence_active or distance <= 0:
+            return
+        
+        new_zone = self._get_zone(distance)
+        if new_zone is None:
+            return
+        
+        if new_zone == self.current_zone:
+            self.pending_zone = None
+            self.zone_confirm_counter = 0
+            return
+        
+        if new_zone == self.pending_zone:
+            self.zone_confirm_counter += 1
+        else:
+            self.pending_zone = new_zone
+            self.zone_confirm_counter = 1
+        
+        if self.zone_confirm_counter >= self.config.zone_confirm_count:
+            old_zone = self.current_zone
+            self.current_zone = new_zone
+            self.pending_zone = None
+            self.zone_confirm_counter = 0
+            if self.on_zone_change:
+                try:
+                    self.on_zone_change(old_zone, new_zone, distance)
+                except:
+                    pass
 
     def read(self):
+        """Ana okuma döngüsü - (presence, distance, zone, event) döner"""
         with self._lock:
-            dist = self._read_raw()
+            if not self.initialized:
+                return False, 0.0, None, "NOT_INIT"
             
-            if dist and 20 < dist < 1500:
-                self.readings.append(dist)
-                self.last_distance = dist
-            
-            # Kalibrasyon
-            if self.baseline is None:
-                elapsed = time.time() - self.calibration_start
-                if elapsed < RadarConfig.CALIBRATION_TIME:
-                    return False, self.last_distance, None, f"CAL {5-int(elapsed)}s"
-                
-                if len(self.readings) >= 10:
-                    self.baseline = sum(self.readings) / len(self.readings)
-                    self.stabilization_end = time.time() + RadarConfig.STABILIZATION_TIME
-                    logging.info(f"📡 Baseline: {self.baseline:.0f}cm (stabil: 10s)")
-                else:
-                    self.calibration_start = time.time()
-                    return False, self.last_distance, None, "RECAL"
-            
-            # Stabilizasyon - callback yok
-            if self._is_stabilizing():
-                remain = int(self.stabilization_end - time.time())
-                return False, self.last_distance, None, f"STAB {remain}s"
-            
-            if not dist:
-                return self.presence_active, self.last_distance, self.current_zone, ""
-            
-            avg = sum(self.readings) / len(self.readings)
-            deviation = abs(avg - self.baseline)
-            motion = abs(dist - self.last_dist) if self.last_dist else 0
-            is_motion = motion > RadarConfig.MOTION_THRESHOLD
-            is_deviated = deviation > RadarConfig.ENTRY_DEVIATION
-            near_baseline = deviation < RadarConfig.EXIT_BASELINE_TOLERANCE
-            self.last_dist = dist
-            
+            now = time.time()
             event = ""
+            
+            # Satır oku
+            line = self._read_line()
+            distance = 0.0
+            
+            if line:
+                dist = self._parse_distance(line)
+                if dist is not None and self.config.min_range <= dist <= self.config.max_range:
+                    distance = dist
+                    self.last_distance = distance
+                    self.last_valid_distance = distance
+            
+            # Hareket algılama
             old_presence = self.presence_active
             
-            if not self.presence_active:
-                if is_deviated and is_motion:
-                    self.entry_counter += 1
-                    if self.entry_counter >= RadarConfig.ENTRY_COUNT:
-                        self.presence_active = True
-                        self.exit_counter = 0
-                        event = "ENTRY"
-                elif not is_deviated:
-                    self.entry_counter = 0
-            else:
-                if near_baseline:
-                    self.exit_counter += 1
-                    if self.exit_counter >= RadarConfig.EXIT_BASELINE_COUNT:
-                        self.presence_active = False
-                        self.entry_counter = 0
-                        self.exit_counter = 0
-                        self.baseline = avg
-                        event = "EXIT"
+            if distance > 0:
+                has_motion = self._detect_motion(distance)
+                
+                if has_motion:
+                    self.motion_count += 1
+                    self.last_activity_time = now
                 else:
-                    self.exit_counter = 0
+                    self.motion_count = max(0, self.motion_count - 1)
+                
+                # Entry: yeterli hareket sayısı
+                if not self.presence_active and self.motion_count >= self.config.motion_count:
+                    self.presence_active = True
+                    event = "ENTRY"
+                    if self.on_presence_change:
+                        try:
+                            self.on_presence_change("ENTRY", distance)
+                        except:
+                            pass
             
-            # Callbacks - SADECE stabilizasyon bittikten sonra
-            if old_presence != self.presence_active and self.on_presence_change:
-                self.on_presence_change(self.presence_active, self.last_distance)
+            # Exit: timeout
+            if self.presence_active:
+                if now - self.last_activity_time > self.config.no_motion_timeout:
+                    self.presence_active = False
+                    self.motion_count = 0
+                    self.distance_history.clear()
+                    event = "EXIT"
+                    # Zone reset
+                    if self.current_zone and self.on_zone_change:
+                        try:
+                            self.on_zone_change(self.current_zone, None, 0.0)
+                        except:
+                            pass
+                    self.current_zone = None
+                    if self.on_presence_change:
+                        try:
+                            self.on_presence_change("EXIT", 0.0)
+                        except:
+                            pass
             
-            new_zone = self._get_zone(self.last_distance) if self.presence_active else None
-            if self.presence_active and new_zone and new_zone != self.current_zone:
-                old_zone = self.current_zone
-                self.current_zone = new_zone
-                if self.on_zone_change:
-                    self.on_zone_change(old_zone, new_zone, self.last_distance)
-            elif not self.presence_active:
-                self.current_zone = None
+            # Zone update
+            if self.presence_active and distance > 0:
+                self._update_zone(distance)
             
-            return self.presence_active, self.last_distance, self.current_zone, event
+            return (
+                self.presence_active,
+                self.last_valid_distance if self.presence_active else 0.0,
+                self.current_zone,
+                event
+            )
 
     def get_status(self):
         with self._lock:
             return {
                 'presence': self.presence_active,
-                'distance_cm': self.last_distance,
+                'distance_cm': self.last_valid_distance if self.presence_active else 0.0,
                 'zone': self.current_zone,
-                'baseline': self.baseline,
-                'initialized': self.initialized
+                'motion_count': self.motion_count,
+                'initialized': self.initialized,
             }
 
     def cleanup(self):
@@ -198,27 +256,48 @@ class RadarReader:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     
-    zones = {
-        'CRITICAL': {'min': 0, 'max': 200},
-        'ALERT': {'min': 200, 'max': 500},
-        'MONITOR': {'min': 500, 'max': 1000}
-    }
+    cfg = RadarConfig(
+        zones={
+            'CRITICAL': {'min': 0, 'max': 100},
+            'ALERT': {'min': 100, 'max': 300},
+            'MONITOR': {'min': 300, 'max': 800},
+        }
+    )
     
-    radar = RadarReader({'ZONES': zones})
-    radar.on_zone_change = lambda o, n, d: print(f"\n🔔 ZONE: {o} → {n} ({d}cm)\n")
-    radar.on_presence_change = lambda p, d: print(f"\n{'🚨 ENTRY' if p else '⚪ EXIT'} @ {d}cm\n")
+    radar = RadarReader(cfg)
     
-    if radar.initialize():
-        try:
-            while True:
-                p, d, z, e = radar.read()
+    def on_presence(event, d):
+        if event == "ENTRY":
+            print(f"\n🚨 ENTRY @ {d:.0f}cm\n")
+        elif event == "EXIT":
+            print(f"\n⚪ EXIT\n")
+    
+    def on_zone(old, new, d):
+        print(f"\n🔔 ZONE: {old} → {new} ({d:.0f}cm)\n")
+    
+    radar.on_presence_change = on_presence
+    radar.on_zone_change = on_zone
+    
+    if not radar.initialize():
+        print("Init failed")
+        exit(1)
+    
+    try:
+        last_print = 0
+        while True:
+            p, d, z, e = radar.read()
+            now = time.time()
+            
+            if now - last_print >= 0.5:
+                last_print = now
                 st = radar.get_status()
-                base = st.get('baseline') or 0
-                dev = abs((d or 0) - base)
-                s = "🚨" if p else "⚪"
-                print(f"{s} D:{d or 0:.0f} | base:{base:.0f} | dev:{dev:.0f} | Z:{z or '---'} {e}")
-                time.sleep(0.15)
-        except KeyboardInterrupt:
-            print("\nDurduruldu")
-        finally:
-            radar.cleanup()
+                icon = "🚨" if p else "⚪"
+                zone_str = z if z else "---"
+                print(f"{icon} D:{d:6.1f}cm | Z:{zone_str:8s} | motion={st['motion_count']}")
+            
+            time.sleep(0.05)
+    
+    except KeyboardInterrupt:
+        print("\nDurduruldu")
+    finally:
+        radar.cleanup()
